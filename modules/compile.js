@@ -1,5 +1,5 @@
 const util = require('util');
-const pth = require('path');
+const cbml = require('cbml');
 const cheerio = require('cheerio');
 const utils = require('./utils');
 
@@ -23,17 +23,21 @@ function eachHtml(code, selector, callback) {
 /**
  * html嵌入html文件中资源地址定位
  * @param {String} path 主html绝对地址
- * @param {String} inlinePath 嵌入html相对地址
  * @param {String} inlineContent 待处理代码
  * @returns {String} 处理完成后的代码
  */
-function inlineHtmlResLocate(path, inlinePath, inlineContent) {
+function inlineHtmlResLocate(path, inlineContent) {
     return eachHtml(inlineContent, 'link,script,a,iframe,img,embed,audio,video,object,source', function (el, tag) {
         let attr = /link|a/.test(tag) ? 'href' : 'src';
+
         for (let name of [attr, 'data-' + attr]) {
             let url = el.attr(name);
-            if (utils.isLocatePath(url) && !pth.isAbsolute(url)) {
-                el.attr(name, utils.inlinePath(path, inlinePath, url).relative);
+            if (url !== undefined) {
+                let inlinePath = utils.inlinePath(path, url);
+
+                if (inlinePath) {
+                    el.attr(name, inlinePath.absolute + inlinePath.search + inlinePath.hash);
+                }
             }
         }
     });
@@ -41,19 +45,20 @@ function inlineHtmlResLocate(path, inlinePath, inlineContent) {
 
 /**
  * html嵌入html文件中资源地址定位
- * @param {Object} file html文件对象
- * @param {jQuery|String} $ html文件内容
- * @returns {jQuery|String} 处理完成后的代码
+ * @param {String} path 主html绝对地址
+ * @param {jQuery} $ html文件内容
+ * @returns {jQuery} 处理完成后的代码
  */
-function htmlInlineHtml(file, $) {
+function htmlInlineHtml(path, $) {
     return eachHtml($, 'link[rel="import"]', function (el) {
-        let url = el.attr('href');
-        if (utils.isLocatePath(url) && !pth.isAbsolute(url) && utils.isHtmlFile(url)) {
-            let inlinePath = utils.inlinePath(file.origin, url),
-                inlineContent = fis.util.read(inlinePath.absolute);
+        let href = el.attr('href'),
+            inlinePath = utils.inlinePath(path, href);
 
-            inlineContent = inlineHtmlResLocate(file.origin, url, inlineContent); //资源定位
-            inlineContent = htmlInlineHtml(file, inlineContent); //循环嵌入
+        if (inlinePath && /\.(html|tpl|ejs)$/i.test(inlinePath.origin)) {
+            let inlineContent = fis.util.read(inlinePath.origin, true);
+
+            inlineContent = inlineHtmlResLocate(inlinePath.origin, inlineContent); //资源定位
+            inlineContent = htmlInlineHtml(inlinePath.origin, inlineContent); //循环嵌入
 
             el.before(inlineContent).remove();
         }
@@ -63,30 +68,83 @@ function htmlInlineHtml(file, $) {
 /**
  * html中嵌如svg图片
  * fis3原本内联svg是转换为base64，提前转换为svg code。
- * @param {Object} file html文件对象
+ * @param {String} path 主html绝对地址
  * @param {jQuery} $ html文件内容
  */
-function htmlInlineSVG(file, $) {
+function htmlInlineSVG(path, $) {
     return eachHtml($, 'img[src$=".svg?__inline"]', function (el) {
-        let url = el.attr('src');
+        let src = el.attr('src'),
+            inlinePath = utils.inlinePath(path, src);
 
-        if (utils.isLocatePath(url) && !pth.isAbsolute(url)) {
-            let inlinePath = utils.inlinePath(file.origin, url),
-                inlineContent = fis.util.read(inlinePath.absolute, true);
+        if (inlinePath) {
+            let inlineContent = fis.util.read(inlinePath.origin, true);
 
-            //压缩svg 替换原来的img
             let svg = $(utils.compressHTML(inlineContent));
             if (el.attr('class') !== undefined) svg.attr('class', el.attr('class'));
+            if (el.attr('style') !== undefined) svg.attr('style', el.attr('style'));
             el.before(svg).remove();
         }
     });
 }
 
-module.exports.html = function (content, file, settings) {
-    let $ = cheerio.load(content, {decodeEntities: false});
+/**
+ * 格式化html代码
+ * @param {String} contents 待处理内容
+ * @param {Object} file 文件信息
+ * @returns {String} 处理后的内容
+ */
+module.exports.extHTML = function (contents, file) {
+    let $ = cheerio.load(contents, {decodeEntities: false});
 
-    htmlInlineHtml(file, $);
-    htmlInlineSVG(file, $);
+    htmlInlineHtml(file.origin, $);
+    htmlInlineSVG(file.origin, $);
 
     return $.html();
+};
+
+/**
+ * 清理开发内容 用来切换release版本和debug版本
+ * debug env != 0 -> 移除
+ * remove env == 0 -> 移除
+ * remove trigger -> 移除
+ * @param {String} contents 待处理内容
+ * @param {Object} settings dev环境值
+ * @returns {String} 处理后的内容
+ */
+module.exports.dev = function (contents, settings) {
+    function buildBlock(obj) {
+        if (!obj) return '';
+
+        obj = typeof obj === "string" ? cbml.parse(obj) : obj;
+
+        let value = '';
+
+        for (let node of obj.nodes) {
+            if (node.type === 'block') {
+                if ((node.tag === 'debug' && settings.env != 0) || (node.tag === 'remove' && !node.attrs.trigger && settings.env == 0)) {
+                    node.value = '';
+                } else if (node.tag === 'remove' && node.attrs.trigger) {
+                    let trigger = node.attrs.trigger,
+                        match = trigger.match(/@([a-z]*?)+(\s*?)/g);
+                    if (match) {
+                        for (let m of match) {
+                            let v = settings[m.replace('@', '')];
+                            trigger = trigger.replace(m, typeof v === "string" ? `'${v.replace(/'/g, "\\'")}'` : v);
+                        }
+                    }
+
+                    if (eval(trigger)) {
+                        node.value = '';
+                    }
+                } else if (node.nodes.length > 1) {
+                    node.value = buildBlock(node);
+                }
+            }
+            value += node.value;
+        }
+
+        return value;
+    }
+
+    return buildBlock(contents);
 };

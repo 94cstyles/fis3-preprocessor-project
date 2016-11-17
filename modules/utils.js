@@ -1,44 +1,87 @@
 const pth = require('path');
-
-const HTML_FILE_EXTS = /^\.(html|tpl|ejs)$/i;
+const fs = require('fs');
+const url = require('url');
 
 module.exports = {
     /**
-     * 判断文件是否是html文件
-     * @param {String} path 文件路径
-     * @returns {Boolean}
+     * 解析路径
+     * @param {String} path
+     * @returns {*}
      */
-    isHtmlFile: function (path) {
-        return HTML_FILE_EXTS.test(pth.extname(fis.util.query(path).rest));
-    },
-    /**
-     * 判断path是否为本地路径
-     * @param {String} path 路径
-     * @returns {Boolean}
-     */
-    isLocatePath: function (path) {
-        return path != '' && path !== undefined && !/^(http:|https:|ftp:)?\/\/.*/.test(path) && !/\/\?\?/.test(path) && !/^(tel:|mailto:|javascript:|\#|data:image)/.test(path);
+    parsePath(path) {
+        if (!path) {
+            return {
+                protocol: null,
+                slashes: null,
+                auth: null,
+                host: null,
+                port: null,
+                hostname: null,
+                hash: '',
+                search: '',
+                query: '',
+                pathname: '',
+                path: '',
+                href: '',
+                rest: '',
+                isLocalPath: false
+            }
+        } else {
+            let info = url.parse(path),
+                rest = Object.assign({}, info);
+
+            rest.search = '';
+            rest.query = '';
+            if (info.pathname != null) rest.hash = '';
+            info.rest = url.format(rest);
+            //判断路径是否是本地路径
+            info.isLocalPath = !/^(https?|ws):\/\//.test(info.rest) && !/^#/.test(info.rest) && !/^(tel|mailto|javascript|data):/.test(info.rest) && (pth.isAbsolute(info.rest) || info.protocol == null);
+            return info;
+        }
     },
     /**
      * 解析path 获取文件内联链接地址
      * @param {String} path 主文件绝对地址
-     * @param {Array} inlinePaths 内联文件相对地址
+     * @param {String} inlinePath 内联文件相对地址或者绝对地址
      * @returns {Object} {
      *  absolute: 内联文件绝对地址,
      *  relative: 内网文件相对于主文件地址
      *  }
      */
-    inlinePath: function (path, ...inlinePaths) {
-        let absolutePath = fis.util.query(path).rest;
-        for (let inlinePath of inlinePaths) {
-            absolutePath = pth.resolve(pth.parse(absolutePath).dir, fis.util.query(inlinePath).rest);
+    inlinePath(path, inlinePath) {
+        let info = this.parsePath(inlinePath),
+            result = null;
+
+        if (info.isLocalPath) {
+            if (pth.isAbsolute(inlinePath)) {
+                result = {
+                    origin: pth.join(process.cwd(), info.pathname),
+                    absolute: info.pathname
+                };
+            } else {
+                result = {
+                    origin: pth.join(pth.dirname(path), info.pathname),
+                    absolute: `/${pth.relative(process.cwd(), pth.join(pth.dirname(path), info.pathname))}`
+                };
+            }
+
+            if (!fs.existsSync(result.origin)) throw result.origin + '：文件不存在！';
+        } else if (/^#/.test(inlinePath)) {
+            result = {
+                origin: '',
+                absolute: ''
+            };
+        } else {
+            result = {
+                origin: info.rest,
+                absolute: info.rest
+            };
         }
-        let info = fis.util.query(inlinePaths[inlinePaths.length - 1]);
-        return {
-            absolute: absolutePath,
-            relative: pth.relative(pth.parse(path).dir, absolutePath) + info.query + info.hash,
-            qh: info.query + info.hash
-        }
+
+        result.search = info.search || '';
+        result.query = info.query || '';
+        result.hash = info.hash || '';
+        return result;
     },
     /**
      * 压缩HTML代码
