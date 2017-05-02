@@ -1,16 +1,15 @@
 {
   "name": "fis3-preprocessor-project",
   "version": "0.0.2",
-  "description": "",
+  "description": "fis 打包前处理插件",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/TOP-Chao/fis3-preprocessor-project.git"
+    "url": "https://github.com/94cstyles/fis3-preprocessor-project.git"
   },
-  "author": "",
+  "author": "cstyles",
   "license": "ISC",
   "dependencies": {
     "cbml": "^0.2.9",
